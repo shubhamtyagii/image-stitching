@@ -60,12 +60,12 @@ class Stitcher:
             Run RANSAC algorithm to get the Homography matrix which maps the image[i+1] best to image[i]
         '''
 
-        samples = random.sample(range(NO_OF_POINTS), no_of_samples)
         max_aligned_points = 0
         final_H = None
         
         for _ in range(no_of_trials):
             t_matches = []
+            samples = random.sample(range(NO_OF_POINTS), no_of_samples)
             for idx in samples:
                 t_matches.append(matches[idx])
                 A = self.prep_A(kp1, kp2, t_matches)
