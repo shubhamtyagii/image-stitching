@@ -6,16 +6,20 @@ import math
 NO_OF_POINTS = 100
 
 class Stitcher:
-    def __init__(self, images, offset = [500,500], final_image_dims = [2000,6000]):
+    def __init__(self, images, offset = [500,500], final_image_dims = [2000,6000], target_idx = 0):
         '''
             images: List of images where 
             assumption is images[i] stitches with images[i+1]
         '''
         self.images = images
-        self.prev_H = np.eye(3)
         self.final_image = self.create_warp_plane(final_image_dims)
         self.offset = offset
+        self.tmp = 0
+        self.target_img_idx = target_idx
+        self.homography_matrices = [None for i in range(len(self.images))]
+        self.homography_matrices[self.target_img_idx] = np.eye(3)
 
+    
     def extract_SIFT_features(self,image):
         '''
             Extract features from the image
@@ -60,6 +64,7 @@ class Stitcher:
             Run RANSAC algorithm to get the Homography matrix which maps the image[i+1] best to image[i]
         '''
 
+        
         max_aligned_points = 0
         final_H = None
         
@@ -88,8 +93,8 @@ class Stitcher:
         print('max found aligned points:', max_aligned_points)
         return final_H
 
-    def calculate_homography(self, img_idx):
-        target_image = self.images[img_idx-1]
+    def calculate_homography(self, img_idx, target_img_idx):
+        target_image = self.images[target_img_idx]
         image_2 = self.images[img_idx]
         target_image = cv2.cvtColor(target_image,cv2.COLOR_RGB2GRAY)
         image_2 = cv2.cvtColor(image_2,cv2.COLOR_RGB2GRAY)
@@ -103,38 +108,81 @@ class Stitcher:
     
     
     def stitch(self):
-        for idx, _ in enumerate(self.images):
-            if idx == 0:
-                self.warp_image_custom(idx, self.prev_H)
+        for idx in range(self.target_img_idx, len(self.images)):
+
+            if idx == self.target_img_idx:
+                self.warp_image_custom(idx)
             
             else:
-                H = self.calculate_homography(idx)
-                self.prev_H = np.matmul(self.prev_H, H)
-                self.warp_image_custom(idx, self.prev_H)
+                H = self.calculate_homography(idx, idx-1)
+                self.homography_matrices[idx] = np.matmul(self.homography_matrices[idx-1], H)
+                self.warp_image_custom(idx)
+
+        for idx in range(self.target_img_idx-1,-1,-1):
+            H = self.calculate_homography(idx, idx+1)
+            self.homography_matrices[idx] = np.matmul(self.homography_matrices[idx+1], H)
+            self.warp_image_custom(idx)
+        
         return self.final_image
         
-
-    def warp_image_custom(self, idx, H):
+    def warp_image_custom(self, idx, forward_warp = False):
         '''
             Forward warp the image using the homography matrix
         '''
+        H = self.homography_matrices[idx]
         img = self.images[idx]
         h, w, _ =  img.shape
+        if forward_warp:
+            coords = np.indices((w, h)).reshape(2, -1)
+            coords = np.vstack((coords, np.ones(coords.shape[1]))).astype(int)    
+            transformedPoints = np.dot(H, coords)
+            yo, xo = coords[1, :], coords[0, :]
+            # projective transform. Output's 3rd index should be one to convert to cartesian coords.
+            yt = np.divide(np.array(transformedPoints[1, :]),np.array(transformedPoints[2, :])).astype(int)
+            xt = np.divide(np.array(transformedPoints[0, :]),np.array(transformedPoints[2, :])).astype(int)
+            self.final_image[yt + self.offset[0], xt + self.offset[1]] = img[yo, xo]
+            cv2.imwrite('warped_'+str(self.tmp)+'.jpg', self.final_image)
+            self.tmp +=1
+        else:          
+            corners = np.array([[0,0,1],[0,h-1,1],[w-1,h-1,1],[w-1,0,1]])
+            transformedPoints = np.dot(H, corners.T)
 
-        coords = np.indices((w, h)).reshape(2, -1)
-        coords = np.vstack((coords, np.ones(coords.shape[1]))).astype(int)    
-        transformedPoints = np.dot(H, coords)
-        yo, xo = coords[1, :], coords[0, :]
-        # projective transform. Output's 3rd index should be one to convert to cartesian coords.
-        yt = np.divide(np.array(transformedPoints[1, :]),np.array(transformedPoints[2, :])).astype(int)
-        xt = np.divide(np.array(transformedPoints[0, :]),np.array(transformedPoints[2, :])).astype(int)
-        self.final_image[yt + self.offset[1], xt + self.offset[0]] = img[yo, xo]
+            H_inv = np.linalg.inv(H)
+            y_corners = np.divide(np.array(transformedPoints[1, :]),np.array(transformedPoints[2, :])).astype(int)
+            x_corners = np.divide(np.array(transformedPoints[0, :]),np.array(transformedPoints[2, :])).astype(int)
+            top_left = [y_corners[0],x_corners[0]]
+            bottom_left = [y_corners[1],x_corners[1]]
+            bottom_right = [y_corners[2],x_corners[2]]
+            top_right = [y_corners[3],x_corners[3]]
+            print('top_left:',top_left,' top_right:', top_right ,' bottom_right:', bottom_right,' bottom_left:',bottom_left)
+            width_start = min(top_left[1], bottom_left[1])
+            width_end =  max(top_right[1], bottom_right[1])
+
+            height_start = min(top_left[0], top_right[0])
+            height_end = max(bottom_right[0], bottom_left[0])
+
+            coords = np.indices((width_end - width_start, height_end - height_start)).reshape(2, -1)
+            coords = np.vstack((coords, np.ones(coords.shape[1]))).astype(int)
+            coords[0, :] += width_start
+            coords[1, :] += height_start
+            h_o, w_o = coords[1, :], coords[0, :]
+
+            transformed_points = np.dot(H_inv, coords)
+            h_i = np.divide(np.array(transformed_points[1, :]),np.array(transformed_points[2, :])).astype(int)
+            w_i = np.divide(np.array(transformed_points[0, :]),np.array(transformed_points[2, :])).astype(int)
+            indices = np.where((h_i >= 0) & (h_i < h) & (w_i >= 0) & (w_i < w))
+            w_o = w_o[indices]
+            h_o = h_o[indices]
+            w_i = w_i[indices]
+            h_i = h_i[indices]
+
+            self.final_image[h_o + self.offset[0], w_o + self.offset[1]] = img[h_i, w_i]
 
 if __name__=='__main__':
     i = 1
     l = []
     for i in range(1,4):
         l.append(cv2.imread('dataset/2/weir_'+str(i)+'.jpg'))
-    s = Stitcher(l)
+    s = Stitcher(l, target_idx=1, offset=[500,1000])
     stitched_image = s.stitch()
-    cv2.imwrite('stitched.jpg', stitched_image)
+    cv2.imwrite('stitched.jpg', stitched_image )

@@ -14,5 +14,4 @@
 
 ## To Do:
 1. Use other image feature Extraction algorithms. For Ex: ORB
-2. Implement backward warping to avoid the unfilled pixels issue.
 2. Implement and add Blending algorithm.
